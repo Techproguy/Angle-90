@@ -12,12 +12,17 @@ import {
   FileText,
   Container,
   Gauge,
+  Lock,
   MapPin,
+  RotateCcw,
   Search,
   Ship,
   ShieldCheck,
   Truck,
+  Upload,
   Waves,
+  Zap,
+  type LucideIcon,
 } from "lucide-react";
 
 /*
@@ -44,14 +49,30 @@ import {
 
 type StageState = "complete" | "current" | "upcoming";
 
-interface Stage {
+interface StageMeta {
   id: string;
   title: string;
+  short: string; // terse label for chips / admin
   blurb: string; // buyer-facing reassurance line
   place: string;
   ts: string; // human timestamp
+  icon: LucideIcon;
+}
+
+interface Stage extends StageMeta {
   state: StageState;
-  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
+}
+
+// Stage at which the shipment currently sits on first load (the sea leg).
+const INITIAL_STAGE = 3;
+
+// Derive per-stage status from a single shared pointer so the admin can
+// advance the shipment and every other tab reflects it instantly.
+function deriveStages(current: number): Stage[] {
+  return STAGE_META.map((m, i) => ({
+    ...m,
+    state: i < current ? "complete" : i === current ? "current" : "upcoming",
+  }));
 }
 
 // The single milestone we count down to (next arrival at Apapa).
@@ -75,71 +96,73 @@ const ORDER = {
   paid: "AED 412,000",
 };
 
-const STAGES: Stage[] = [
+const STAGE_META: StageMeta[] = [
   {
     id: "paid",
     title: "Order confirmed & paid",
+    short: "Paid",
     blurb: "Your payment cleared and the vehicle is reserved in your name.",
     place: "Marhaba Luxury Exports, Dubai",
     ts: "28 May 2026 · 10:14 GST",
-    state: "complete",
     icon: BadgeCheck,
   },
   {
     id: "docs",
     title: "Export documentation cleared",
+    short: "Docs cleared",
     blurb: "Invoice, title transfer and customs paperwork are all in order.",
     place: "Dubai Customs",
     ts: "01 Jun 2026 · 16:40 GST",
-    state: "complete",
     icon: FileText,
   },
   {
     id: "port-dxb",
     title: "Vehicle at Jebel Ali Port",
+    short: "At Jebel Ali",
     blurb: "Loaded, sealed and staged in the export yard, ready to sail.",
     place: "Jebel Ali Port, Dubai",
     ts: "05 Jun 2026 · 09:05 GST",
-    state: "complete",
     icon: Container,
   },
   {
     id: "transit",
     title: "Crossing the ocean",
+    short: "In transit",
     blurb: "On board MV Grande Lagos, sailing the Gulf toward West Africa.",
     place: "Indian Ocean → Atlantic",
     ts: "Departed 09 Jun 2026 · 22:10 GST",
-    state: "current",
     icon: Ship,
   },
   {
     id: "arrive",
     title: "Arrives at Lagos Port (Apapa)",
+    short: "At Apapa",
     blurb: "Berths at Apapa and is offloaded onto Nigerian soil.",
     place: "Apapa Port, Lagos",
     ts: "Est. 24 Jun 2026 · 14:30 WAT",
-    state: "upcoming",
     icon: Anchor,
   },
   {
     id: "customs",
     title: "Customs cleared · SONCAP verified",
+    short: "Customs",
     blurb: "Nigeria Customs releases the vehicle; SONCAP compliance confirmed.",
     place: "Nigeria Customs Service, Apapa",
     ts: "Est. 27 Jun 2026 · WAT",
-    state: "upcoming",
     icon: ShieldCheck,
   },
   {
     id: "delivered",
     title: "Delivered to you",
+    short: "Delivered",
     blurb: "Handed over with keys, documents and a final inspection.",
     place: "Lekki, Lagos",
     ts: "Est. 30 Jun 2026 · WAT",
-    state: "upcoming",
     icon: Car,
   },
 ];
+
+type DocStatus = "Ready" | "Pending";
 
 interface DocItem {
   id: string;
@@ -147,7 +170,9 @@ interface DocItem {
   meta: string;
   code: string;
   size: string;
-  status: "Ready" | "Pending";
+  status: DocStatus; // initial status
+  readyCode?: string; // shown once uploaded, if different
+  readySize?: string;
 }
 
 const DOCUMENTS: DocItem[] = [
@@ -174,6 +199,8 @@ const DOCUMENTS: DocItem[] = [
     code: "SC-NG-PENDING",
     size: "Awaiting arrival",
     status: "Pending",
+    readyCode: "SC-NG-2026-0847",
+    readySize: "PDF · 96 KB",
   },
   {
     id: "inspection",
@@ -414,7 +441,7 @@ function TimelineNode({ stage, isLast }: { stage: Stage; isLast: boolean }) {
         </div>
 
         {/* ocean-crossing visual lives under the in-transit node */}
-        {current && <OceanLeg />}
+        {current && stage.id === "transit" && <OceanLeg />}
       </div>
     </li>
   );
@@ -463,8 +490,41 @@ function OceanLeg() {
 // Countdown
 // ----------------------------------------------------------------------------
 
-function CountdownBlock() {
+function CountdownBlock({ currentStage }: { currentStage: number }) {
   const { days, hours, minutes, seconds } = useCountdown(ETA_TARGET);
+
+  // Once the vehicle has reached Apapa (stage 4+), a countdown no longer
+  // applies — show the live status instead.
+  const ARRIVE_IDX = 4;
+  if (currentStage >= ARRIVE_IDX) {
+    const idx = Math.min(currentStage, STAGE_META.length - 1);
+    const stage = STAGE_META[idx];
+    const Icon = stage.icon;
+    const delivered = currentStage >= STAGE_META.length - 1;
+    return (
+      <div className="flex items-center gap-3">
+        <div
+          className={cx(
+            "flex h-11 w-11 shrink-0 items-center justify-center rounded-full border",
+            delivered
+              ? "border-[#6FC79A]/40 bg-[#6FC79A]/15 text-[#6FC79A]"
+              : "border-[#E9B25C]/40 bg-[#E9B25C]/15 text-[#E9B25C]"
+          )}
+        >
+          <Icon className="h-5 w-5" />
+        </div>
+        <div>
+          <p className="font-['IBM_Plex_Mono'] text-[10px] uppercase tracking-wider text-[#6f9298]">
+            Current status
+          </p>
+          <p className="font-['Space_Grotesk'] text-base font-semibold text-[#ECF4F2]">
+            {delivered ? "Delivered to buyer" : stage.title}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const cell = (value: number, label: string) => (
     <div className="flex flex-col items-center">
       <span
@@ -529,11 +589,13 @@ function StatCard({
   );
 }
 
-function TrackView() {
+function TrackView({ currentStage }: { currentStage: number }) {
   const [query, setQuery] = useState(ORDER.ref);
   const [tracked, setTracked] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+
+  const stages = deriveStages(currentStage);
 
   const onLookup = (e: React.FormEvent) => {
     e.preventDefault();
@@ -552,8 +614,22 @@ function TrackView() {
     }
   };
 
-  const completed = STAGES.filter((s) => s.state === "complete").length;
-  const progressPct = Math.round((completed / (STAGES.length - 1)) * 100);
+  const total = STAGE_META.length;
+  const completed = Math.min(currentStage, total);
+  const progressPct = Math.min(100, Math.round((completed / (total - 1)) * 100));
+  const stageNumber = Math.min(currentStage + 1, total);
+  const delivered = currentStage >= total - 1;
+
+  // Status chip on the hero reflects the live stage.
+  const chipStage = STAGE_META[Math.min(currentStage, total - 1)];
+  const ChipIcon = delivered ? CheckCircle2 : chipStage.icon;
+  const chipLabel = delivered ? "Delivered" : chipStage.short;
+  const chipTone =
+    chipStage.id === "transit"
+      ? "border-[#5FC8C1]/40 bg-[#5FC8C1]/10 text-[#5FC8C1]"
+      : delivered
+        ? "border-[#6FC79A]/40 bg-[#6FC79A]/10 text-[#6FC79A]"
+        : "border-[#E9B25C]/40 bg-[#E9B25C]/10 text-[#E9B25C]";
 
   return (
     <div className="space-y-6">
@@ -605,8 +681,13 @@ function TrackView() {
                     {ORDER.vehicle.year} · {ORDER.vehicle.trim}
                   </p>
                 </div>
-                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#5FC8C1]/40 bg-[#5FC8C1]/10 px-2.5 py-1 font-['IBM_Plex_Mono'] text-[11px] text-[#5FC8C1]">
-                  <Ship className="h-3.5 w-3.5" /> In transit
+                <span
+                  className={cx(
+                    "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 font-['IBM_Plex_Mono'] text-[11px]",
+                    chipTone
+                  )}
+                >
+                  <ChipIcon className="h-3.5 w-3.5" /> {chipLabel}
                 </span>
               </div>
               <div className="mt-2 h-28">
@@ -641,7 +722,7 @@ function TrackView() {
 
             {/* countdown */}
             <div className="border-t border-[#1E454F] bg-[#0B2027]/60 px-5 py-4">
-              <CountdownBlock />
+              <CountdownBlock currentStage={currentStage} />
             </div>
 
             {/* spec grid */}
@@ -663,7 +744,7 @@ function TrackView() {
                 </h3>
               </div>
               <span className="font-['IBM_Plex_Mono'] text-xs text-[#8AA6AC]">
-                {progressPct}% · stage {completed} of {STAGES.length}
+                {progressPct}% · stage {stageNumber} of {total}
               </span>
             </div>
             <div className="mb-6 h-1.5 w-full overflow-hidden rounded-full bg-[#0B2027]">
@@ -675,11 +756,11 @@ function TrackView() {
 
             {/* the signature timeline */}
             <ol className="mt-1">
-              {STAGES.map((s, i) => (
+              {stages.map((s, i) => (
                 <TimelineNode
                   key={s.id}
                   stage={s}
-                  isLast={i === STAGES.length - 1}
+                  isLast={i === stages.length - 1}
                 />
               ))}
             </ol>
@@ -699,8 +780,12 @@ function TrackView() {
 // Documents view
 // ----------------------------------------------------------------------------
 
-function DocumentsView() {
-  const ready = DOCUMENTS.filter((d) => d.status === "Ready").length;
+function DocumentsView({
+  docStatus,
+}: {
+  docStatus: Record<string, DocStatus>;
+}) {
+  const ready = DOCUMENTS.filter((d) => docStatus[d.id] === "Ready").length;
   return (
     <div className="space-y-5">
       <div>
@@ -718,7 +803,9 @@ function DocumentsView() {
 
       <ul className="space-y-3">
         {DOCUMENTS.map((doc) => {
-          const ready = doc.status === "Ready";
+          const ready = docStatus[doc.id] === "Ready";
+          const code = ready && doc.readyCode ? doc.readyCode : doc.code;
+          const size = ready && doc.readySize ? doc.readySize : doc.size;
           return (
             <li
               key={doc.id}
@@ -742,7 +829,7 @@ function DocumentsView() {
                 </div>
                 <p className="truncate text-[12px] text-[#8AA6AC]">{doc.meta}</p>
                 <p className="mt-0.5 font-['IBM_Plex_Mono'] text-[11px] text-[#6f9298]">
-                  {doc.code} · {doc.size}
+                  {code} · {size}
                 </p>
               </div>
               {ready ? (
@@ -792,7 +879,20 @@ const STAGE_ICON: Record<FleetVehicle["stageKind"], React.ComponentType<{ classN
   docs: FileText,
 };
 
-function DealerView() {
+function DealerView({ currentStage }: { currentStage: number }) {
+  const total = STAGE_META.length;
+  // The order under admin control reflects the shared stage live.
+  const liveStage = STAGE_META[Math.min(currentStage, total - 1)];
+  const liveDelivered = currentStage >= total - 1;
+  const liveKind: FleetVehicle["stageKind"] =
+    liveStage.id === "transit"
+      ? "transit"
+      : liveStage.id === "customs"
+        ? "customs"
+        : liveStage.id === "arrive" || liveStage.id === "port-dxb"
+          ? "port"
+          : "docs";
+
   return (
     <div className="space-y-5">
       <div>
@@ -832,11 +932,26 @@ function DealerView() {
       {/* fleet list */}
       <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {FLEET.map((v) => {
-          const Icon = STAGE_ICON[v.stageKind];
+          const live = v.ref === ORDER.ref;
+          const kind = live ? liveKind : v.stageKind;
+          const label = live
+            ? liveDelivered
+              ? "Delivered"
+              : liveStage.short
+            : v.stage;
+          const eta = live && liveDelivered ? "Done" : v.eta;
+          const Icon = live && liveDelivered ? CheckCircle2 : STAGE_ICON[kind];
+          const tone =
+            live && liveDelivered
+              ? "border-[#6FC79A]/40 bg-[#6FC79A]/10 text-[#6FC79A]"
+              : STAGE_STYLE[kind];
           return (
             <li
               key={v.ref}
-              className="group rounded-xl border border-[#1E454F] bg-[#0E2A33] p-4 transition hover:border-[#E9B25C]/40"
+              className={cx(
+                "group rounded-xl border bg-[#0E2A33] p-4 transition hover:border-[#E9B25C]/40",
+                live ? "border-[#E9B25C]/40" : "border-[#1E454F]"
+              )}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -850,10 +965,10 @@ function DealerView() {
                 <span
                   className={cx(
                     "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-['IBM_Plex_Mono'] text-[10px]",
-                    STAGE_STYLE[v.stageKind]
+                    tone
                   )}
                 >
-                  <Icon className="h-3 w-3" /> {v.stage}
+                  <Icon className="h-3 w-3" /> {label}
                 </span>
               </div>
               <div className="mt-3 flex items-center justify-between border-t border-[#1E454F] pt-3">
@@ -861,7 +976,7 @@ function DealerView() {
                   <MapPin className="h-3.5 w-3.5 text-[#6f9298]" /> {v.destination}
                 </span>
                 <span className="inline-flex items-center gap-1.5 font-['IBM_Plex_Mono'] text-[12px] text-[#ECF4F2]">
-                  <Clock className="h-3.5 w-3.5 text-[#E9B25C]" /> ETA {v.eta}
+                  <Clock className="h-3.5 w-3.5 text-[#E9B25C]" /> ETA {eta}
                   <ChevronRight className="h-3.5 w-3.5 text-[#6f9298] transition group-hover:translate-x-0.5 group-hover:text-[#E9B25C]" />
                 </span>
               </div>
@@ -874,30 +989,274 @@ function DealerView() {
 }
 
 // ----------------------------------------------------------------------------
+// Admin / operations view
+// ----------------------------------------------------------------------------
+
+function AdminView({
+  currentStage,
+  setCurrentStage,
+  docStatus,
+  setDocStatus,
+}: {
+  currentStage: number;
+  setCurrentStage: (n: number) => void;
+  docStatus: Record<string, DocStatus>;
+  setDocStatus: React.Dispatch<React.SetStateAction<Record<string, DocStatus>>>;
+}) {
+  const total = STAGE_META.length;
+  const stages = deriveStages(currentStage);
+  const stageNumber = Math.min(currentStage + 1, total);
+  const currentTitle =
+    currentStage >= total
+      ? "Delivered — journey complete"
+      : STAGE_META[currentStage].title;
+  const readyDocs = DOCUMENTS.filter((d) => docStatus[d.id] === "Ready").length;
+
+  const advance = () => setCurrentStage(Math.min(currentStage + 1, total));
+  const stepBack = () => setCurrentStage(Math.max(currentStage - 1, 0));
+
+  return (
+    <div className="space-y-5">
+      {/* accent bar marks this as the internal tool */}
+      <div className="-mx-4 -mt-6 mb-1 h-1 bg-gradient-to-r from-[#E9B25C] via-[#5FC8C1] to-[#E9B25C] sm:-mx-6" />
+
+      {/* operations banner */}
+      <div className="flex items-start gap-2.5 rounded-xl border border-[#E9B25C]/30 bg-[#E9B25C]/10 p-3.5">
+        <Zap className="mt-0.5 h-4 w-4 shrink-0 text-[#E9B25C]" />
+        <div>
+          <p className="font-['Space_Grotesk'] text-[13px] font-semibold text-[#ECF4F2]">
+            Operations view
+          </p>
+          <p className="text-[12px] leading-relaxed text-[#c9b48f]">
+            Updates here are reflected in real time on the buyer's tracking page
+            and the dealer dashboard.
+          </p>
+        </div>
+      </div>
+
+      {/* quick order summary */}
+      <div className="rounded-2xl border border-[#1E454F] bg-[#0E2A33] p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-['Space_Grotesk'] text-base font-bold text-[#ECF4F2]">
+            {ORDER.vehicle.name}
+          </h2>
+          <span className="font-['IBM_Plex_Mono'] text-[11px] text-[#5FC8C1]">
+            {ORDER.ref}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <StatCard label="VIN" value={ORDER.vehicle.vin} />
+          <StatCard
+            label="Destination"
+            value={`${ORDER.destination.port}, Lagos`}
+          />
+          <StatCard label="Current stage" value={`${stageNumber} of ${total}`} sub={currentTitle} />
+          <StatCard label="ETA" value="24 Jun 2026" sub="Apapa Port" />
+        </div>
+      </div>
+
+      {/* shipment status controller */}
+      <div className="rounded-2xl border border-[#1E454F] bg-[#0E2A33] p-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Gauge className="h-4 w-4 text-[#E9B25C]" />
+            <h3 className="font-['Space_Grotesk'] text-sm font-semibold text-[#ECF4F2]">
+              Shipment status
+            </h3>
+          </div>
+          <button
+            onClick={stepBack}
+            disabled={currentStage === 0}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#1E454F] bg-[#0B2027] px-2.5 py-1.5 font-['Space_Grotesk'] text-[12px] font-medium text-[#8AA6AC] transition hover:text-[#ECF4F2] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E9B25C]/50"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Step back
+          </button>
+        </div>
+
+        <ol className="space-y-2">
+          {stages.map((s, i) => {
+            const complete = s.state === "complete";
+            const current = s.state === "current";
+            const Icon = s.icon;
+            return (
+              <li
+                key={s.id}
+                className={cx(
+                  "flex items-center gap-3 rounded-xl border p-3 transition",
+                  current
+                    ? "border-[#E9B25C]/50 bg-[#E9B25C]/10"
+                    : "border-[#1E454F] bg-[#0B2027]/60"
+                )}
+              >
+                <span
+                  className={cx(
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border",
+                    complete && "border-[#6FC79A]/40 bg-[#6FC79A]/15 text-[#6FC79A]",
+                    current && "border-[#E9B25C] bg-[#E9B25C] text-[#07171E]",
+                    s.state === "upcoming" &&
+                      "border-[#1E454F] bg-[#0B2027] text-[#5b7980]"
+                  )}
+                >
+                  {complete ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : (
+                    <Icon className="h-4 w-4" />
+                  )}
+                </span>
+
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={cx(
+                      "font-['Space_Grotesk'] text-[13px] font-semibold leading-tight",
+                      s.state === "upcoming" ? "text-[#8AA6AC]" : "text-[#ECF4F2]"
+                    )}
+                  >
+                    <span className="font-['IBM_Plex_Mono'] text-[11px] text-[#6f9298]">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>{" "}
+                    {s.short}
+                  </p>
+                </div>
+
+                {complete && (
+                  <span className="font-['IBM_Plex_Mono'] text-[11px] uppercase tracking-wide text-[#6FC79A]">
+                    Complete
+                  </span>
+                )}
+                {current && (
+                  <button
+                    onClick={advance}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#E9B25C] px-3 py-2 font-['Space_Grotesk'] text-[12px] font-semibold text-[#07171E] transition hover:bg-[#f0c179] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E9B25C] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0E2A33]"
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Mark complete
+                  </button>
+                )}
+                {s.state === "upcoming" && (
+                  <span className="inline-flex shrink-0 items-center gap-1 font-['IBM_Plex_Mono'] text-[11px] uppercase tracking-wide text-[#5b7980]">
+                    <Lock className="h-3 w-3" /> Locked
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+        {currentStage >= total && (
+          <p className="mt-3 text-center font-['IBM_Plex_Mono'] text-[11px] text-[#6FC79A]">
+            All stages complete — vehicle delivered.
+          </p>
+        )}
+      </div>
+
+      {/* document upload simulator */}
+      <div className="rounded-2xl border border-[#1E454F] bg-[#0E2A33] p-4">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FileText className="h-4 w-4 text-[#E9B25C]" />
+            <h3 className="font-['Space_Grotesk'] text-sm font-semibold text-[#ECF4F2]">
+              Documents
+            </h3>
+          </div>
+          <span className="font-['IBM_Plex_Mono'] text-[11px] text-[#8AA6AC]">
+            {readyDocs}/{DOCUMENTS.length} uploaded
+          </span>
+        </div>
+
+        <ul className="space-y-2">
+          {DOCUMENTS.map((doc) => {
+            const ready = docStatus[doc.id] === "Ready";
+            return (
+              <li
+                key={doc.id}
+                className="flex items-center gap-3 rounded-xl border border-[#1E454F] bg-[#0B2027]/60 p-3"
+              >
+                <span
+                  className={cx(
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border",
+                    ready
+                      ? "border-[#6FC79A]/40 bg-[#6FC79A]/15 text-[#6FC79A]"
+                      : "border-[#E9B25C]/40 bg-[#E9B25C]/15 text-[#E9B25C]"
+                  )}
+                >
+                  <FileText className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-['Space_Grotesk'] text-[13px] font-semibold text-[#ECF4F2]">
+                    {doc.name}
+                  </p>
+                  <p className="font-['IBM_Plex_Mono'] text-[11px] text-[#6f9298]">
+                    {ready ? "Ready" : "Pending upload"}
+                  </p>
+                </div>
+                {ready ? (
+                  <button
+                    onClick={() =>
+                      setDocStatus((prev) => ({ ...prev, [doc.id]: "Pending" }))
+                    }
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[#1E454F] bg-[#0B2027] px-2.5 py-1.5 font-['Space_Grotesk'] text-[12px] font-medium text-[#8AA6AC] transition hover:text-[#ECF4F2] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E9B25C]/50"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Revert
+                  </button>
+                ) : (
+                  <button
+                    onClick={() =>
+                      setDocStatus((prev) => ({ ...prev, [doc.id]: "Ready" }))
+                    }
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#E9B25C] px-3 py-2 font-['Space_Grotesk'] text-[12px] font-semibold text-[#07171E] transition hover:bg-[#f0c179] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E9B25C] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0E2A33]"
+                  >
+                    <Upload className="h-3.5 w-3.5" /> Upload
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
 // Shell
 // ----------------------------------------------------------------------------
 
-type Tab = "track" | "documents" | "dealer";
+type Tab = "track" | "documents" | "dealer" | "admin";
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "track", label: "Track", icon: MapPin },
   { id: "documents", label: "Documents", icon: FileText },
   { id: "dealer", label: "Dealer", icon: Gauge },
+  { id: "admin", label: "Admin", icon: Lock },
 ];
 
 export default function ExportTrack() {
   const [tab, setTab] = useState<Tab>("track");
 
+  // Shared, in-memory state — the single source of truth across every tab.
+  // The admin advances these and Track + Documents react instantly.
+  const [currentStage, setCurrentStage] = useState<number>(INITIAL_STAGE);
+  const [docStatus, setDocStatus] = useState<Record<string, DocStatus>>(() =>
+    Object.fromEntries(DOCUMENTS.map((d) => [d.id, d.status]))
+  );
+
   const view = useMemo(() => {
     switch (tab) {
       case "documents":
-        return <DocumentsView />;
+        return <DocumentsView docStatus={docStatus} />;
       case "dealer":
-        return <DealerView />;
+        return <DealerView currentStage={currentStage} />;
+      case "admin":
+        return (
+          <AdminView
+            currentStage={currentStage}
+            setCurrentStage={setCurrentStage}
+            docStatus={docStatus}
+            setDocStatus={setDocStatus}
+          />
+        );
       default:
-        return <TrackView />;
+        return <TrackView currentStage={currentStage} />;
     }
-  }, [tab]);
+  }, [tab, currentStage, docStatus]);
 
   return (
     <div className="min-h-screen bg-[#07171E] font-['Inter'] text-[#ECF4F2] antialiased">
@@ -954,11 +1313,11 @@ export default function ExportTrack() {
                   aria-selected={active}
                   onClick={() => setTab(t.id)}
                   className={cx(
-                    "relative flex flex-1 items-center justify-center gap-1.5 px-3 py-3 font-['Space_Grotesk'] text-[13px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#E9B25C]/60",
+                    "relative flex flex-1 items-center justify-center gap-1.5 px-1.5 py-3 font-['Space_Grotesk'] text-[12px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#E9B25C]/60 sm:px-3 sm:text-[13px]",
                     active ? "text-[#E9B25C]" : "text-[#8AA6AC] hover:text-[#ECF4F2]"
                   )}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-4 w-4 shrink-0" />
                   {t.label}
                   {active && (
                     <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-[#E9B25C]" />
